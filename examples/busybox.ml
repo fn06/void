@@ -12,6 +12,7 @@ let copy_busybox ~fs ~proc =
   Eio.Path.with_open_out ~create:(`If_missing 0o755) (fs / tmpdir / "busybox")
   @@ fun copy ->
   Eio.Flow.copy bbox copy;
+  Eio.traceln "Copying into %s" tmpdir;
   tmpdir
 
 (* This example read-only mounts a copy of busybox
@@ -26,7 +27,7 @@ let () =
   let void =
     empty
     |> mount ~mode:R ~src:busybox_dir ~tgt:"bin"
-    |> exec [ "/bin/busybox"; "ls"; "-la" ]
+    |> exec [ "/busybox"; "ls"; "-la" ]
   in
   let t = Void.spawn ~sw void in
   let status = Promise.await (Void.exit_status t) in

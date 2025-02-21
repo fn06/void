@@ -256,11 +256,14 @@ static void action_pivot_root(int errors, value v_config) {
   while(current_mount != Val_emptylist) {
     // TODO: Mode for mounting
 
+	// A mount is a record {src; tgt; mode}, we first create the mount point
+	// directory target
     if(mkdir(String_val(Field(Field(current_mount, 0), 1)), 0777) == -1) {
       eio_unix_fork_error(errors, "pivot_root-mkdir-mount", strerror(errno));
       _exit(1);
     }
 
+	// Next we mount the mount point 
     mount_result = mount(
       String_val(Field(Field(current_mount, 0), 0)),
       String_val(Field(Field(current_mount, 0), 1)),
@@ -281,6 +284,21 @@ static void action_pivot_root(int errors, value v_config) {
 
     // Next mount in the list
     current_mount = Field(current_mount, 1);
+  }
+
+  if (Bool_val(v_no_root)) {
+   int res = mount(
+     "proc",
+	 "/proc",
+	 "proc",
+	 NULL,
+	 NULL
+   );
+
+   if (mount_result < 0) {
+     eio_unix_fork_error(errors, "woops!", strerror(errno));
+	 _exit(1);
+   }
   }
 
   // Change to the 'new' root

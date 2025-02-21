@@ -34,6 +34,7 @@ type path = string
 (** File paths *)
 
 type mode = R | RW
+(* Mounting modes *)
 
 type void
 (** A configuration for a void process *)
