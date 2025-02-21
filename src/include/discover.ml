@@ -18,6 +18,7 @@ let () =
               ("CLONE_NEWUSER", Int);
               ("CLONE_NEWUTS", Int);
               (* Mount Flags *)
+              ("MS_RDONLY", Int);
               ("MS_REMOUNT", Int);
               ("MS_BIND", Int);
               ("MS_SHARED", Int);

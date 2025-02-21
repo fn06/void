@@ -5,6 +5,7 @@ let ( / ) = Eio.Path.( / )
 let test_data fs data =
   let tempdir = Filename.temp_dir "void-" "-alpine" in
   Eio.Path.(save ~create:(`If_missing 0o644) (fs / tempdir / "data.txt") data);
+  Eio.traceln "Test data in %s" tempdir;
   tempdir
 
 let get_alpine_image ~fs ~proc =
@@ -52,11 +53,14 @@ let () =
   let open Void in
   let args =
     let l = Array.length Sys.argv in
-    if l <= 1 then [ "/bin/cat"; "/data/data.txt" ]
+    if l <= 1 then
+      [
+        "/bin/ash"; "-c"; "/bin/echo hello > /hello.txt && /bin/cat /hello.txt";
+      ]
     else Array.sub Sys.argv 1 (l - 1) |> Array.to_list
   in
   let void =
-    empty |> rootfs ~mode:R alpine_img
+    empty |> rootfs ~mode:RW alpine_img
     |> mount ~mode:R ~src:mount_src ~tgt:"data"
     |> exec args
   in

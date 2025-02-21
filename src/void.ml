@@ -13,13 +13,14 @@ type void = {
   mounts : mount list;
 }
 
-and mount = { src : string; tgt : string; mode : mode [@warning "-69"] }
+and mount = { src : string; tgt : string; mode : int [@warning "-69"] }
 
 (* Actions for namespacing *)
 module Mount = struct
   module Flags = struct
     include Config.Mount_flags
 
+    let empty : t = 0
     let ( + ) = ( lor )
   end
 
@@ -46,10 +47,15 @@ external action_pivot_root : unit -> Fork_action.fork_fn
 
 let action_pivot_root = action_pivot_root ()
 
-let pivot_root (new_root : string) (tmpfs : bool) (mounts : mount list) =
+let pivot_root (new_root : string) (new_root_flags : Mount.Flags.t)
+    (tmpfs : bool) (mounts : mount list) =
   Fork_action.
     {
-      run = (fun k -> k (Obj.repr (action_pivot_root, new_root, tmpfs, mounts)));
+      run =
+        (fun k ->
+          k
+            (Obj.repr
+               (action_pivot_root, new_root, new_root_flags, tmpfs, mounts)));
     }
 
 external action_map_uid_gid : unit -> Fork_action.fork_fn
@@ -95,7 +101,7 @@ type path = string
 let empty = { args = []; rootfs = None; mounts = [] }
 
 let actions v : Fork_action.t list =
-  let root, tmpfs, _mode =
+  let root, tmpfs, root_mode =
     match v.rootfs with
     | None -> (Filename.temp_dir "void-" "-tmpdir", true, R)
     | Some (s, m) -> (s, false, m)
@@ -114,14 +120,20 @@ let actions v : Fork_action.t list =
         { mnt with tgt; src })
       v.mounts
   in
-  let mounts = pivot_root root tmpfs mounts in
+  let root_flags =
+    if root_mode = R then Mount.Flags.ms_rdonly else Mount.Flags.empty
+  in
+  let mounts = pivot_root root root_flags tmpfs mounts in
   let uid, gid = Unix.(getuid (), getgid ()) in
   let user_namespace = map_uid_gid ~uid ~gid in
   [ user_namespace; mounts; e ]
 
 let rootfs ~mode path v = { v with rootfs = Some (path, mode) }
 let exec args v = { v with args }
-let mount ~mode ~src ~tgt v = { v with mounts = { src; tgt; mode } :: v.mounts }
+
+let mount ~mode ~src ~tgt v =
+  let mode = if mode = R then Mount.Flags.ms_rdonly else Mount.Flags.empty in
+  { v with mounts = { src; tgt; mode } :: v.mounts }
 
 (* From eio_linux/eio_posix *)
 let with_pipe fn =

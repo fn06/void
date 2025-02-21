@@ -202,8 +202,9 @@ static int pivot_root(const char *new_root, const char *put_old) {
 // Is there too much OCaml stuff going on here for a fork_action ?
 static void action_pivot_root(int errors, value v_config) {
   value v_new_root = Field(v_config, 1);
-  value v_no_root = Field(v_config, 2);
-  value v_mounts = Field(v_config, 3);
+  value v_root_flags = Field(v_config, 2);
+  value v_no_root = Field(v_config, 3);
+  value v_mounts = Field(v_config, 4);
   char path[PATH_MAX];
   char old_root_path[PATH_MAX];
   char *new_root = String_val(v_new_root);
@@ -253,8 +254,10 @@ static void action_pivot_root(int errors, value v_config) {
   // Add mounts
   value current_mount = v_mounts;
   int mount_result;
+  int mode;
   while(current_mount != Val_emptylist) {
     // TODO: Mode for mounting
+	mode = Int_val(Field(Field(current_mount, 0), 2));
 
 	// A mount is a record {src; tgt; mode}, we first create the mount point
 	// directory target
@@ -263,7 +266,6 @@ static void action_pivot_root(int errors, value v_config) {
       _exit(1);
     }
 
-	// Next we mount the mount point 
     mount_result = mount(
       String_val(Field(Field(current_mount, 0), 0)),
       String_val(Field(Field(current_mount, 0), 1)),
@@ -282,16 +284,34 @@ static void action_pivot_root(int errors, value v_config) {
       _exit(1);
     }
 
+	// After mounting for the first time, we can come back and add any
+	// extra modes that may have been specified, for example RDONLY.
+	if (mode != 0) { 
+		mount_result = mount(
+		  String_val(Field(Field(current_mount, 0), 0)),
+		  String_val(Field(Field(current_mount, 0), 1)),
+		  NULL,
+		  MS_REMOUNT | MS_BIND | mode,
+		  NULL
+		);
+
+		if (mount_result < 0) {
+          eio_unix_fork_error(errors, "remount for mode", strerror(errno));
+		  _exit(1);
+		}
+	}
+
     // Next mount in the list
     current_mount = Field(current_mount, 1);
   }
 
+  
   // Change to the 'new' root
   if (chdir("/") == -1) {
     eio_unix_fork_error(errors, "pivot_root-chdir", strerror(errno));
     _exit(1);
   }
-  
+
   // Unmount the old root and remove it
   if (umount2(put_old, MNT_DETACH) == -1) {
     eio_unix_fork_error(errors, put_old, strerror(errno));
@@ -302,6 +322,15 @@ static void action_pivot_root(int errors, value v_config) {
   if (rmdir(put_old) == -1) {
     eio_unix_fork_error(errors, put_old, strerror(errno));
     _exit(1);
+  }
+
+
+  // Apply any flags to the new root, e.g. RDONLY
+  if (Int_val(v_root_flags)) {
+	  if (mount("/", "/", NULL, (MS_REMOUNT | MS_BIND | Int_val(v_root_flags)), NULL) <= -1) {
+		eio_unix_fork_error(errors, "pivot_root-rootflags", strerror(errno));
+		_exit(1);
+	  }
   }
 }
 
