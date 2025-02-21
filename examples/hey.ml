@@ -19,4 +19,4 @@ let () =
   in
   let t = Void.spawn ~sw void in
   let status = Promise.await (Void.exit_status t) in
-  Eio.traceln "Void process exited with %s" (Void.exit_status_to_string status)
+  Eio.traceln "Void process: %s" (Void.exit_status_to_string status)
