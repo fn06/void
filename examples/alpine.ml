@@ -56,9 +56,8 @@ let () =
     else Array.sub Sys.argv 1 (l - 1) |> Array.to_list
   in
   let void =
-    empty
-    |> rootfs ~mode:R alpine_img
-    |> mount ~mode:R ~src:mount_src ~tgt:"data" 
+    empty |> rootfs ~mode:R alpine_img
+    |> mount ~mode:R ~src:mount_src ~tgt:"data"
     |> exec args
   in
   let t = Void.spawn ~sw void in

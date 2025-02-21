@@ -1,3 +1,3 @@
 (executables
- (names busybox curl alpine)
+ (names hey curl alpine)
  (libraries void eio_posix))

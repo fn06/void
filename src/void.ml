@@ -176,9 +176,7 @@ let spawn ~sw v =
   (* Check for errors starting the process. *)
   match read_response errors_r with
   | "" -> t (* Success! Execing the child closed [errors_w] and we got EOF. *)
-  | err -> 
-    Eio.traceln "Hmm we got errors :S!";
-      failwith err
+  | err -> failwith err
 
 let exit_status_to_string = function
   | Unix.WEXITED n -> Printf.sprintf "Exited with %i" n

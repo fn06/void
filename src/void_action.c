@@ -286,21 +286,6 @@ static void action_pivot_root(int errors, value v_config) {
     current_mount = Field(current_mount, 1);
   }
 
-  if (Bool_val(v_no_root)) {
-   int res = mount(
-     "proc",
-	 "/proc",
-	 "proc",
-	 NULL,
-	 NULL
-   );
-
-   if (mount_result < 0) {
-     eio_unix_fork_error(errors, "woops!", strerror(errno));
-	 _exit(1);
-   }
-  }
-
   // Change to the 'new' root
   if (chdir("/") == -1) {
     eio_unix_fork_error(errors, "pivot_root-chdir", strerror(errno));
