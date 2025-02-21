@@ -19,4 +19,4 @@ jobs:
 
       - run: opam install . --deps-only --with-test
       - run: opam exec -- dune build
-      - run: sudo ./_build/examples/hey.exe
+      - run: sudo ./_build/default/examples/hey.exe
