@@ -1,11 +1,12 @@
 (** {1 Void}
 
-Void is a library to provide {e void processes}.
-A void process is an {e empty} process, one in which most global resources have been removed.
-As a user, you can add back in precisely those pieces you need for your process.
+    Void is a library to provide {e void processes}. A void process is an
+    {e empty} process, one in which most global resources have been removed. As
+    a user, you can add back in precisely those pieces you need for your
+    process.
 
-Void uses Eio's [fork_action]s to provide this mechanism, thus it is only available with Eio.
-*)
+    Void uses Eio's [fork_action]s to provide this mechanism, thus it is only
+    available with Eio. *)
 
 module Mount : sig
   module Flags : sig
