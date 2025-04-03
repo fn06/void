@@ -190,6 +190,12 @@ let spawn ~sw v =
   | "" -> t (* Success! Execing the child closed [errors_w] and we got EOF. *)
   | err -> failwith err
 
+let to_eio_status t =
+  match t with
+  | Unix.WEXITED i -> `Exited i
+  | Unix.WSIGNALED i -> `Signaled i
+  | Unix.WSTOPPED _ -> assert false
+
 let exit_status_to_string = function
   | Unix.WEXITED n -> Printf.sprintf "Exited with %i" n
   | Unix.WSTOPPED n -> Printf.sprintf "Stopped with %i" n

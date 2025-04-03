@@ -58,3 +58,4 @@ val pid : t -> int
 
 val exit_status : t -> Unix.process_status Eio.Promise.t
 val exit_status_to_string : Unix.process_status -> string
+val to_eio_status : Unix.process_status -> Eio.Process.exit_status
