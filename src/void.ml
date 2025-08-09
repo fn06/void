@@ -196,7 +196,10 @@ let to_eio_status t =
   | Unix.WSIGNALED i -> `Signaled i
   | Unix.WSTOPPED _ -> assert false
 
-let exit_status_to_string = function
-  | Unix.WEXITED n -> Printf.sprintf "Exited with %i" n
-  | Unix.WSTOPPED n -> Printf.sprintf "Stopped with %i" n
-  | Unix.WSIGNALED n -> Printf.sprintf "Signalled with %i" n
+let pp_exit_status ppf = function
+  | Unix.WEXITED n -> Fmt.pf ppf "Exited with %i" n
+  | Unix.WSTOPPED n -> Fmt.pf ppf "Stopped with %i" n
+  | Unix.WSIGNALED n -> Fmt.pf ppf "Signalled with %i" n
+
+let run t =
+  Eio.Switch.run @@ fun sw -> spawn ~sw t |> exit_status |> Eio.Promise.await

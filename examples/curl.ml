@@ -52,4 +52,4 @@ let () =
   let void = empty |> rootfs ~mode:R alpine_img |> exec args in
   let t = Void.spawn ~sw void in
   let status = Promise.await (Void.exit_status t) in
-  Eio.traceln "Status: %s" (Void.exit_status_to_string status)
+  Eio.traceln "Status: %a" Void.pp_exit_status status

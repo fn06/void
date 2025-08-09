@@ -19,6 +19,8 @@
 #include <unistd.h>
 #include <string.h>
 
+// We need caml_convert_signal_number
+#define CAML_INTERNALS
 
 #include <caml/mlvalues.h>
 #include <caml/unixsupport.h>

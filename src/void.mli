@@ -56,6 +56,19 @@ val spawn : sw:Eio.Switch.t -> void -> t
 val pid : t -> int
 (** The pid of a running void process *)
 
+val run : void -> Unix.process_status
+(** A combination of {! spawn} and awaiting the promise returned by
+    {! exit_status} *)
+
+(** {2 Exit status}
+
+    By default, void processes return a {! Unix.process_status} but you can
+    convert this to an {! Eio} version.*)
+
 val exit_status : t -> Unix.process_status Eio.Promise.t
-val exit_status_to_string : Unix.process_status -> string
+(** Obtain a promise for whenever the void process exits *)
+
+val pp_exit_status : Unix.process_status Fmt.t
+(** Useful for debugging, a simple pretty-printer for exit statuses *)
+
 val to_eio_status : Unix.process_status -> Eio.Process.exit_status
