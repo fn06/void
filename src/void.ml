@@ -8,12 +8,15 @@ module Fork_action = Eio_unix.Private.Fork_action
 type mode = R | RW
 
 type void = {
-  args : string list;
+  args : executor * string list;
   rootfs : (string * mode) option;
   mounts : mount list;
+  network : network;
 }
 
 and mount = { src : string; tgt : string; mode : int [@warning "-69"] }
+and network = { devices : string list }
+and executor = Program of string | File of Eio_unix.Fd.t
 
 (* Actions for namespacing *)
 module Mount = struct
@@ -66,6 +69,26 @@ let action_map_uid_gid = action_map_uid_gid ()
 let map_uid_gid ~uid ~gid =
   Fork_action.{ run = (fun k -> k (Obj.repr (action_map_uid_gid, uid, gid))) }
 
+external action_fexecve : unit -> Fork_action.fork_fn = "void_fork_fexecve"
+
+type c_array
+
+external make_string_array : int -> c_array = "eio_unix_make_string_array"
+
+let action_fexecve = action_fexecve ()
+
+let fexecve fd ~argv ~env =
+  let argv_c_array = make_string_array (Array.length argv) in
+  let env_c_array = make_string_array (Array.length env) in
+  Fork_action.
+    {
+      run =
+        (fun k ->
+          k
+            (Obj.repr
+               (action_fexecve, fd, argv_c_array, argv, env_c_array, env)));
+    }
+
 module Flags = struct
   include Config.Clone_flags
 
@@ -98,7 +121,13 @@ let void_flags = List.fold_left Flags.( + ) 0 Flags.all
 
 type path = string
 
-let empty = { args = []; rootfs = None; mounts = [] }
+let empty =
+  {
+    args = (Program "", []);
+    rootfs = None;
+    mounts = [];
+    network = { devices = [] };
+  }
 
 let actions v : Fork_action.t list =
   let root, tmpfs, root_mode =
@@ -106,10 +135,23 @@ let actions v : Fork_action.t list =
     | None -> (Filename.temp_dir "void-" "-tmpdir", true, R)
     | Some (s, m) -> (s, false, m)
   in
-  let args = match v.args with [] -> failwith "No exec" | args -> args in
+  let program, args = v.args in
   let e =
-    Process.Fork_action.execve (List.hd args) ~env:[||]
-      ~argv:(Array.of_list args)
+    match program with
+    | Program p ->
+        Process.Fork_action.execve p ~env:[||] ~argv:(Array.of_list args)
+    | File fd ->
+        Eio_unix.Fd.use_exn "fexec" fd @@ fun ufd ->
+        fexecve ufd ~env:[||] ~argv:(Array.of_list args)
+  in
+  let fds_to_map = match program with File fd -> [ fd ] | _ -> [] in
+  let fds =
+    List.map
+      (fun fd ->
+        let fd_int : int = Eio_unix.Fd.use_exn "inherit-fds" fd Obj.magic in
+        (fd_int, fd, `Nonblocking))
+      fds_to_map
+    |> Eio_unix.Private.Fork_action.inherit_fds
   in
   (* Process mount point points *)
   let mounts =
@@ -126,14 +168,25 @@ let actions v : Fork_action.t list =
   let mounts = pivot_root root root_flags tmpfs mounts in
   let uid, gid = Unix.(getuid (), getgid ()) in
   let user_namespace = map_uid_gid ~uid ~gid in
-  [ user_namespace; mounts; e ]
+  [ user_namespace; mounts; fds; e ]
 
 let rootfs ~mode path v = { v with rootfs = Some (path, mode) }
-let exec args v = { v with args }
+
+let exec args v =
+  Eio.traceln "ARGS %a" Fmt.(list string) args;
+  { v with args = (Program (List.hd args), args) }
+
+let fexec file args v =
+  match Eio_unix.Resource.fd_opt file with
+  | None -> invalid_arg "No underlying file descriptor"
+  | Some fd -> { v with args = (File fd, args) }
 
 let mount ~mode ~src ~tgt v =
   let mode = if mode = R then Mount.Flags.ms_rdonly else Mount.Flags.empty in
   { v with mounts = { src; tgt; mode } :: v.mounts }
+
+let network device v =
+  { v with network = { devices = device :: v.network.devices } }
 
 (* From eio_linux/eio_posix *)
 let with_pipe fn =

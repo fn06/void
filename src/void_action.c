@@ -1,3 +1,25 @@
+/*
+Copyright (C) 2021 Anil Madhavapeddy  
+Copyright (C) 2022 Thomas Leonard  
+
+Permission to use, copy, modify, and distribute this software for any
+purpose with or without fee is hereby granted, provided that the above
+copyright notice and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+
+This project includes some IPv6 code by Hugo Heuzard from ocaml-ipaddr,
+which has the following license:
+
+ISC License */
+
 #define _GNU_SOURCE
 #define _FILE_OFFSET_BITS 64
 #include <linux/sched.h>
@@ -398,4 +420,68 @@ CAMLprim value
 void_fork_pivot_root (value v_unit)
 {
   return Val_fork_fn (action_pivot_root);
+}
+
+#define String_array_val(v) *((char ***)Data_custom_val(v))
+
+static void finalize_string_array(value v) {
+  free(String_array_val(v));
+  String_array_val(v) = NULL;
+}
+
+static struct custom_operations string_array_ops = {
+  "string.array",
+  finalize_string_array,
+  custom_compare_default,
+  custom_hash_default,
+  custom_serialize_default,
+  custom_deserialize_default,
+  custom_compare_ext_default,
+  custom_fixed_length_default
+};
+
+CAMLprim value void_make_string_array(value v_len) {
+  CAMLparam0();
+  CAMLlocal1(v_str_array);
+  int n = Int_val(v_len);
+  uintnat total;
+
+  if (caml_umul_overflow(sizeof(char *), n + 1, &total))
+    caml_raise_out_of_memory();
+
+  v_str_array = caml_alloc_custom_mem(&string_array_ops, sizeof(char ***), total);
+
+  char **c = calloc(sizeof(char *), n + 1);
+  String_array_val(v_str_array) = c;
+  if (!c)
+    caml_raise_out_of_memory();
+
+  CAMLreturn(v_str_array);
+}
+
+static void fill_string_array(char **c, value v_ocaml_array) {
+  int n = Wosize_val(v_ocaml_array);
+
+  for (int i = 0; i < n; i++) {
+    c[i] = (char *) String_val(Field(v_ocaml_array, i));
+  }
+
+  c[n] = NULL;
+}
+
+static void action_fexecve(int errors, value v_config) {
+  value v_exe = Field(v_config, 1);
+  char **argv = String_array_val(Field(v_config, 2));
+  char **envp = String_array_val(Field(v_config, 4));
+
+  fill_string_array(argv, Field(v_config, 3));
+  fill_string_array(envp, Field(v_config, 5));
+
+  fexecve(Int_val(v_exe), argv, envp);
+  eio_unix_fork_error(errors, "fexecve", strerror(errno));
+  _exit(1);
+}
+
+CAMLprim value void_fork_fexecve(value v_unit) {
+  return Val_fork_fn(action_fexecve);
 }

@@ -46,8 +46,15 @@ val rootfs : mode:mode -> path -> void -> void
 (** Add a new root filesystem *)
 
 val mount : mode:mode -> src:path -> tgt:path -> void -> void
+(** Mount a path into the void process *)
+
+val network : string -> void -> void
+(** Add a network device *)
 
 val exec : string list -> void -> void
+(** Make a void configuration ready to be spawned *)
+
+val fexec : _ Eio.File.ro -> string list -> void -> void
 (** Make a void configuration ready to be spawned *)
 
 val spawn : sw:Eio.Switch.t -> void -> t
