@@ -7,8 +7,8 @@ module Fork_action = Eio_unix.Private.Fork_action
 
 type mode = R | RW
 
-type void = {
-  args : executor * string list;
+type config = {
+  args : (executor * string list) option;
   rootfs : (string * mode) option;
   mounts : mount list;
   network : network;
@@ -122,12 +122,14 @@ let void_flags = List.fold_left Flags.( + ) 0 Flags.all
 type path = string
 
 let empty =
-  {
-    args = (Program "", []);
-    rootfs = None;
-    mounts = [];
-    network = { devices = [] };
-  }
+  { args = None; rootfs = None; mounts = []; network = { devices = [] } }
+
+let std_fds =
+  [
+    (0, Eio_unix.Fd.stdin, `Blocking);
+    (1, Eio_unix.Fd.stdout, `Blocking);
+    (2, Eio_unix.Fd.stderr, `Blocking);
+  ]
 
 let actions v : Fork_action.t list =
   let root, tmpfs, root_mode =
@@ -135,23 +137,27 @@ let actions v : Fork_action.t list =
     | None -> (Filename.temp_dir "void-" "-tmpdir", true, R)
     | Some (s, m) -> (s, false, m)
   in
-  let program, args = v.args in
   let e =
-    match program with
-    | Program p ->
-        Process.Fork_action.execve p ~env:[||] ~argv:(Array.of_list args)
-    | File fd ->
-        Eio_unix.Fd.use_exn "fexec" fd @@ fun ufd ->
-        fexecve ufd ~env:[||] ~argv:(Array.of_list args)
+    match v.args with
+    | None -> []
+    | Some (program, args) -> (
+        match program with
+        | Program p ->
+            [
+              Process.Fork_action.execve p ~env:[||] ~argv:(Array.of_list args);
+            ]
+        | File fd ->
+            Eio_unix.Fd.use_exn "fexec" fd @@ fun ufd ->
+            [ fexecve ufd ~env:[||] ~argv:(Array.of_list args) ])
   in
-  let fds_to_map = match program with File fd -> [ fd ] | _ -> [] in
+  let fds_to_map = match v.args with Some (File fd, _) -> [ fd ] | _ -> [] in
   let fds =
     List.map
       (fun fd ->
         let fd_int : int = Eio_unix.Fd.use_exn "inherit-fds" fd Obj.magic in
         (fd_int, fd, `Nonblocking))
       fds_to_map
-    |> Eio_unix.Private.Fork_action.inherit_fds
+    |> List.append std_fds |> Eio_unix.Private.Fork_action.inherit_fds
   in
   (* Process mount point points *)
   let mounts =
@@ -168,18 +174,15 @@ let actions v : Fork_action.t list =
   let mounts = pivot_root root root_flags tmpfs mounts in
   let uid, gid = Unix.(getuid (), getgid ()) in
   let user_namespace = map_uid_gid ~uid ~gid in
-  [ user_namespace; mounts; fds; e ]
+  [ user_namespace; mounts; fds ] @ e
 
 let rootfs ~mode path v = { v with rootfs = Some (path, mode) }
-
-let exec args v =
-  Eio.traceln "ARGS %a" Fmt.(list string) args;
-  { v with args = (Program (List.hd args), args) }
+let exec args v = { v with args = Some (Program (List.hd args), args) }
 
 let fexec file args v =
   match Eio_unix.Resource.fd_opt file with
   | None -> invalid_arg "No underlying file descriptor"
-  | Some fd -> { v with args = (File fd, args) }
+  | Some fd -> { v with args = Some (File fd, "fexec" :: args) }
 
 let mount ~mode ~src ~tgt v =
   let mode = if mode = R then Mount.Flags.ms_rdonly else Mount.Flags.empty in

@@ -36,34 +36,34 @@ type path = string
 type mode = R | RW
 (* Mounting modes *)
 
-type void
+type config
 (** A configuration for a void process *)
 
-val empty : void
+val empty : config
 (** The empty void *)
 
-val rootfs : mode:mode -> path -> void -> void
+val rootfs : mode:mode -> path -> config -> config
 (** Add a new root filesystem *)
 
-val mount : mode:mode -> src:path -> tgt:path -> void -> void
+val mount : mode:mode -> src:path -> tgt:path -> config -> config
 (** Mount a path into the void process *)
 
-val network : string -> void -> void
+val network : string -> config -> config
 (** Add a network device *)
 
-val exec : string list -> void -> void
+val exec : string list -> config -> config
 (** Make a void configuration ready to be spawned *)
 
-val fexec : _ Eio.File.ro -> string list -> void -> void
+val fexec : _ Eio.File.ro -> string list -> config -> config
 (** Make a void configuration ready to be spawned *)
 
-val spawn : sw:Eio.Switch.t -> void -> t
+val spawn : sw:Eio.Switch.t -> config -> t
 (** Spawn a void process *)
 
 val pid : t -> int
 (** The pid of a running void process *)
 
-val run : void -> Unix.process_status
+val run : config -> Unix.process_status
 (** A combination of {! spawn} and awaiting the promise returned by
     {! exit_status} *)
 

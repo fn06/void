@@ -1,0 +1,3 @@
+(executable
+ (name main)
+ (libraries void eio_posix))
