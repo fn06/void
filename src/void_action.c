@@ -1,6 +1,7 @@
 /*
-Copyright (C) 2021 Anil Madhavapeddy  
-Copyright (C) 2022 Thomas Leonard  
+Copyright (C) 2021 Anil Madhavapeddy
+Copyright (C) 2022 Thomas Leonard
+Copyright (C) 2026 Patrick Ferris
 
 Permission to use, copy, modify, and distribute this software for any
 purpose with or without fee is hereby granted, provided that the above
@@ -24,31 +25,31 @@ ISC License */
 #define _FILE_OFFSET_BITS 64
 #include <linux/sched.h>
 
+#include <sys/eventfd.h>
 #include <sys/stat.h>
 #include <sys/types.h>
-#include <sys/eventfd.h>
 #if __GLIBC__ > 2 || __GLIBC_MINOR__ > 24
 #include <sys/random.h>
 #endif
+#include <dirent.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <limits.h>
+#include <signal.h>
+#include <string.h>
+#include <sys/mount.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
-#include <sys/mount.h>
-#include <limits.h>
-#include <errno.h>
-#include <dirent.h>
-#include <fcntl.h>
-#include <signal.h>
 #include <unistd.h>
-#include <string.h>
 
 // We need caml_convert_signal_number
 #define CAML_INTERNALS
 
-#include <caml/mlvalues.h>
-#include <caml/unixsupport.h>
-#include <caml/memory.h>
 #include <caml/custom.h>
 #include <caml/fail.h>
+#include <caml/memory.h>
+#include <caml/mlvalues.h>
+#include <caml/unixsupport.h>
 
 // From Eio
 #include <include/fork_action.h>
@@ -59,8 +60,7 @@ ISC License */
 
 // struct clone_args isn't defined in linux-lts headers, so define it here
 // Note that this struct is versioned by size. See linux/sched.h for details
-struct caml_void_clone_args
-{
+struct caml_void_clone_args {
   uint64_t flags;
   uint64_t pidfd;
   uint64_t child_tid;
@@ -71,151 +71,126 @@ struct caml_void_clone_args
   uint64_t tls;
 };
 
-static int
-pidfd_send_signal (int pidfd, int sig, siginfo_t *info, unsigned int flags)
-{
-  return syscall (SYS_pidfd_send_signal, pidfd, sig, info, flags);
+static int pidfd_send_signal(int pidfd, int sig, siginfo_t *info,
+                             unsigned int flags) {
+  return syscall(SYS_pidfd_send_signal, pidfd, sig, info, flags);
 }
 
-CAMLprim value
-caml_void_pidfd_send_signal (value v_pidfd, value v_signal)
-{
-  CAMLparam0 ();
+CAMLprim value caml_void_pidfd_send_signal(value v_pidfd, value v_signal) {
+  CAMLparam0();
   int res;
 
-  res =
-    pidfd_send_signal (Int_val (v_pidfd),
-		       caml_convert_signal_number (Int_val (v_signal)), NULL,
-		       0);
+  res = pidfd_send_signal(
+      Int_val(v_pidfd), caml_convert_signal_number(Int_val(v_signal)), NULL, 0);
   if (res == -1)
-    uerror ("pidfd_send_signal", Nothing);
-  CAMLreturn (Val_unit);
+    uerror("pidfd_send_signal", Nothing);
+  CAMLreturn(Val_unit);
 }
 
-static pid_t
-clone3_no_fallback (struct caml_void_clone_args *cl_args)
-{
-  int *pidfd = (int *) (uintptr_t) cl_args->pidfd;
+static pid_t clone3_no_fallback(struct caml_void_clone_args *cl_args) {
+  int *pidfd = (int *)(uintptr_t)cl_args->pidfd;
   pid_t child_pid =
-    syscall (SYS_clone3, cl_args, sizeof (struct caml_void_clone_args));
+      syscall(SYS_clone3, cl_args, sizeof(struct caml_void_clone_args));
 
   if (child_pid >= 0)
-    return child_pid;		/* Success! */
+    return child_pid; /* Success! */
 
-  if (errno != ENOSYS && errno != EPERM)
-    {
-      uerror ("clone3", Nothing);	/* Unknown error */
-    }
+  if (errno != ENOSYS && errno != EPERM) {
+    uerror("clone3", Nothing); /* Unknown error */
+  }
 
-  uerror ("clone3", Nothing);
+  uerror("clone3", Nothing);
 }
 
-CAMLprim value
-caml_void_clone3 (value v_errors, value v_flags, value v_actions)
-{
-  CAMLparam1 (v_actions);
-  CAMLlocal1 (v_result);
+CAMLprim value caml_void_clone3(value v_errors, value v_flags,
+                                value v_actions) {
+  CAMLparam1(v_actions);
+  CAMLlocal1(v_result);
   pid_t child_pid;
-  int pidfd = -1;		/* Is automatically close-on-exec */
+  int pidfd = -1; /* Is automatically close-on-exec */
 
   struct caml_void_clone_args cl_args = {
-    .flags = Int_val (v_flags),
-    .pidfd = (uintptr_t) & pidfd,
-    .exit_signal = SIGCHLD,	/* Needed for wait4 to work if we exit before exec */
-    .stack = (uintptr_t) NULL,	/* Use copy-on-write parent stack */
-    .stack_size = 0,
+      .flags = Int_val(v_flags),
+      .pidfd = (uintptr_t)&pidfd,
+      .exit_signal =
+          SIGCHLD, /* Needed for wait4 to work if we exit before exec */
+      .stack = (uintptr_t)NULL, /* Use copy-on-write parent stack */
+      .stack_size = 0,
   };
 
-  child_pid = clone3_no_fallback (&cl_args);
-  if (child_pid == 0)
-    {
-      /* Run child actions (doesn't return) */
-      eio_unix_run_fork_actions (Int_val (v_errors), v_actions);
-    }
+  child_pid = clone3_no_fallback(&cl_args);
+  if (child_pid == 0) {
+    /* Run child actions (doesn't return) */
+    eio_unix_run_fork_actions(Int_val(v_errors), v_actions);
+  }
 
-  v_result = caml_alloc_tuple (2);
-  Store_field (v_result, 0, Val_long (child_pid));
-  Store_field (v_result, 1, Val_int (pidfd));
+  v_result = caml_alloc_tuple(2);
+  Store_field(v_result, 0, Val_long(child_pid));
+  Store_field(v_result, 1, Val_int(pidfd));
 
-  CAMLreturn (v_result);
+  CAMLreturn(v_result);
 }
 
-
-// Actions 
+// Actions
 
 // MOUNT/UNMOUNT
-static void
-action_mount (int errors, value v_config)
-{
-  value v_src = Field (v_config, 1);
-  value v_tgt = Field (v_config, 2);
-  value v_type = Field (v_config, 3);
-  value v_flags = Field (v_config, 4);
+static void action_mount(int errors, value v_config) {
+  value v_src = Field(v_config, 1);
+  value v_tgt = Field(v_config, 2);
+  value v_type = Field(v_config, 3);
+  value v_flags = Field(v_config, 4);
 
   int r;
 
-  r =
-    mount (String_val (v_src), String_val (v_tgt), String_val (v_type),
-	   Int_val (v_flags), NULL);
+  r = mount(String_val(v_src), String_val(v_tgt), String_val(v_type),
+            Int_val(v_flags), NULL);
 
-  if (r != 0)
-    {
-      eio_unix_fork_error (errors, "mount", strerror (errno));
-      _exit (1);
-    }
+  if (r != 0) {
+    eio_unix_fork_error(errors, "mount", errno);
+  }
 }
 
-CAMLprim value
-void_fork_mount (value v_unit)
-{
-  return Val_fork_fn (action_mount);
+CAMLprim value void_fork_mount(value v_unit) {
+  return Val_fork_fn(action_mount);
 }
 
 // Writes a single line to a file
-static int
-put_line (const char *filename, const char *line)
-{
+static int put_line(const char *filename, const char *line) {
   int fd;
   int written;
 
-  fd = open (filename, O_WRONLY | O_CLOEXEC | O_CREAT | O_TRUNC, 0644);
+  fd = open(filename, O_WRONLY | O_CLOEXEC | O_CREAT | O_TRUNC, 0644);
 
-  if (fd < 0)
-    {
-      return fd;
-    }
+  if (fd < 0) {
+    return fd;
+  }
 
-  written = write (fd, line, strlen (line));
+  written = write(fd, line, strlen(line));
 
-  close (fd);
+  close(fd);
 
-  if (written != strlen (line))
-    {
-      return -1;
-    }
+  if (written != strlen(line)) {
+    return -1;
+  }
 
   return 0;
 }
 
 // MAP UID/GID to root
-static void
-action_map_uid_gid (int errors, value v_config)
-{
-  value v_uid = Field (v_config, 1);
-  value v_gid = Field (v_config, 2);
+static void action_map_uid_gid(int errors, value v_config) {
+  value v_uid = Field(v_config, 1);
+  value v_gid = Field(v_config, 2);
   int result;
   char uid_line[30];
   char gid_line[30];
 
   // We map root onto the calling UID
-  snprintf (uid_line, sizeof (uid_line), "0 %i 1\n", Int_val (v_uid));
-  result = put_line ("/proc/self/uid_map", uid_line);
+  snprintf(uid_line, sizeof(uid_line), "0 %i 1\n", Int_val(v_uid));
+  result = put_line("/proc/self/uid_map", uid_line);
 
-  if (result < 0)
-    {
-      eio_unix_fork_error (errors, "map_uid_gid-uid", strerror (errno));
-      _exit (1);
-    }
+  if (result < 0) {
+    eio_unix_fork_error(errors, "map_uid_gid-uid", errno);
+  }
 
   /* From user_namespaces(7)
    *
@@ -226,200 +201,165 @@ action_map_uid_gid (int errors, value v_config)
    *
    * See also: https://lwn.net/Articles/626665/ */
 
-  put_line ("/proc/self/setgroups", "deny\n");
+  put_line("/proc/self/setgroups", "deny\n");
 
-  if (result < 0)
-    {
-      eio_unix_fork_error (errors, "map_uid_gid-setgroups", strerror (errno));
-      _exit (1);
-    }
+  if (result < 0) {
+    eio_unix_fork_error(errors, "map_uid_gid-setgroups", errno);
+  }
 
-  result =
-    snprintf (gid_line, sizeof (gid_line), "0 %i 1\n", Int_val (v_gid));
-  put_line ("/proc/self/gid_map", gid_line);
+  result = snprintf(gid_line, sizeof(gid_line), "0 %i 1\n", Int_val(v_gid));
+  put_line("/proc/self/gid_map", gid_line);
 
-  if (result < 0)
-    {
-      eio_unix_fork_error (errors, "map_uid_gid-gid", strerror (errno));
-      _exit (1);
-    }
+  if (result < 0) {
+    eio_unix_fork_error(errors, "map_uid_gid-gid", errno);
+  }
 }
 
-
-CAMLprim value
-void_fork_map_uid_gid (value v_unit)
-{
-  return Val_fork_fn (action_map_uid_gid);
+CAMLprim value void_fork_map_uid_gid(value v_unit) {
+  return Val_fork_fn(action_map_uid_gid);
 }
 
 // PIVOT ROOT
 //
-static int
-pivot_root (const char *new_root, const char *put_old)
-{
-  return syscall (SYS_pivot_root, new_root, put_old);
+static int pivot_root(const char *new_root, const char *put_old) {
+  return syscall(SYS_pivot_root, new_root, put_old);
+}
+
+// http://nion.modprobe.de/blog/archives/357-Recursive-directory-creation.html
+static int mkdirs(const char *dir) {
+  char tmp[256];
+  char *p = NULL;
+  size_t len;
+
+  snprintf(tmp, sizeof(tmp), "%s", dir);
+  len = strlen(tmp);
+  if (tmp[len - 1] == '/')
+    tmp[len - 1] = 0;
+  for (p = tmp + 1; *p; p++)
+    if (*p == '/') {
+      *p = 0;
+      mkdir(tmp, S_IRWXU);
+      *p = '/';
+    }
+  return mkdir(tmp, S_IRWXU);
 }
 
 // Is there too much OCaml stuff going on here for a fork_action ?
-static void
-action_pivot_root (int errors, value v_config)
-{
-  value v_new_root = Field (v_config, 1);
-  value v_root_flags = Field (v_config, 2);
-  value v_no_root = Field (v_config, 3);
-  value v_mounts = Field (v_config, 4);
+static void action_pivot_root(int errors, value v_config) {
+  value v_new_root = Field(v_config, 1);
+  value v_root_flags = Field(v_config, 2);
+  value v_no_root = Field(v_config, 3);
+  value v_mounts = Field(v_config, 4);
   char path[PATH_MAX];
   char old_root_path[PATH_MAX];
-  char *new_root = String_val (v_new_root);
+  char *new_root = String_val(v_new_root);
   const char *put_old = ".old_root";
 
   // From pivot_root example: We want to change the propagation type
   // of root to be private so we can pivot it.
-  if (mount (NULL, "/", NULL, MS_REC | MS_PRIVATE, NULL) == -1)
-    {
-      eio_unix_fork_error (errors, "pivot_root-private", strerror (errno));
-      _exit (1);
-    }
+  if (mount(NULL, "/", NULL, MS_REC | MS_PRIVATE, NULL) == -1) {
+    eio_unix_fork_error(errors, "pivot_root-private", errno);
+  }
 
   // If no pivot_root was given, then we tmpfs the tmpdir we assume was passed.
-  if (Bool_val (v_no_root))
-    {
-      // Make a temporary directory... can't because it allocates ?
-      //if (mkdtemp(new_root) != NULL) {
-      //  eio_unix_fork_error(errors, new_root, strerror(errno));
-      //  _exit(1);
-      //}
+  if (Bool_val(v_no_root)) {
+    // Make a temporary directory... can't because it allocates ?
+    // if (mkdtemp(new_root) != NULL) {
+    //  eio_unix_fork_error(errors, new_root, strerror(errno));
+    //  _exit(1);
+    //}
 
-      if (mount ("tmpfs", new_root, "tmpfs", 0, NULL) <= -1)
-	{
-	  eio_unix_fork_error (errors, "pivot_root-tmpfs", strerror (errno));
-	  _exit (1);
-	}
+    if (mount("tmpfs", new_root, "tmpfs", 0, NULL) <= -1) {
+      eio_unix_fork_error(errors, "pivot_root-tmpfs", errno);
     }
-  else
-    {
-      // From pivot_root example: we check that new_root is indeed a mountpoint 
-      if (mount (new_root, new_root, NULL, MS_BIND, NULL) <= -1)
-	{
-	  eio_unix_fork_error (errors, "pivot_root-new_root",
-			       strerror (errno));
-	  _exit (1);
-	}
+  } else {
+    // From pivot_root example: we check that new_root is indeed a mountpoint
+    if (mount(new_root, new_root, NULL, MS_BIND, NULL) <= -1) {
+      eio_unix_fork_error(errors, "pivot_root-new_root", errno);
     }
+  }
 
   // Make the place to pivot the old root too, under the new root
-  snprintf (old_root_path, sizeof (path), "%s/%s", new_root, put_old);
+  snprintf(old_root_path, sizeof(path), "%s/%s", new_root, put_old);
 
-  if (mkdir (old_root_path, 0777) == -1)
-    {
-      eio_unix_fork_error (errors, "pivot_root-mkdir-put_old",
-			   strerror (errno));
-      _exit (1);
-    }
+  if (mkdir(old_root_path, 0777) == -1) {
+    eio_unix_fork_error(errors, "pivot_root-mkdir-put_old", errno);
+  }
 
   // Pivot the root
-  if (pivot_root (new_root, old_root_path))
-    {
-      eio_unix_fork_error (errors, "pivot_root", strerror (errno));
-      _exit (1);
-    }
+  if (pivot_root(new_root, old_root_path)) {
+    eio_unix_fork_error(errors, "pivot_root", errno);
+  }
 
   // Add mounts
   value current_mount = v_mounts;
   int mount_result;
   int mode;
-  while (current_mount != Val_emptylist)
-    {
-      // TODO: Mode for mounting
-      mode = Int_val (Field (Field (current_mount, 0), 2));
+  while (current_mount != Val_emptylist) {
+    // TODO: Mode for mounting
+    mode = Int_val(Field(Field(current_mount, 0), 2));
 
-      // A mount is a record {src; tgt; mode}, we first create the mount point
-      // directory target
-      if (mkdir (String_val (Field (Field (current_mount, 0), 1)), 0777) ==
-	  -1)
-	{
-	  eio_unix_fork_error (errors, "pivot_root-mkdir-mount",
-			       strerror (errno));
-	  _exit (1);
-	}
-
-      mount_result = mount (String_val (Field (Field (current_mount, 0), 0)),
-			    String_val (Field (Field (current_mount, 0), 1)),
-			    NULL, MS_REC | MS_BIND, NULL);
-
-      // Fail early if a mount fails...
-      if (mount_result < 0)
-	{
-	  char error[PATH_MAX];
-	  snprintf (error, sizeof (error), "mount failed: (%s->%s)",
-		    String_val (Field (Field (current_mount, 0), 0)),
-		    String_val (Field (Field (current_mount, 0), 1)));
-	  eio_unix_fork_error (errors, error, strerror (errno));
-	  _exit (1);
-	}
-
-      // After mounting for the first time, we can come back and add any
-      // extra modes that may have been specified, for example RDONLY.
-      if (mode != 0)
-	{
-	  mount_result =
-	    mount (String_val (Field (Field (current_mount, 0), 0)),
-		   String_val (Field (Field (current_mount, 0), 1)), NULL,
-		   MS_REMOUNT | MS_BIND | mode, NULL);
-
-	  if (mount_result < 0)
-	    {
-	      eio_unix_fork_error (errors, "remount for mode",
-				   strerror (errno));
-	      _exit (1);
-	    }
-	}
-
-      // Next mount in the list
-      current_mount = Field (current_mount, 1);
+    // A mount is a record {src; tgt; mode}, we first create the mount point
+    // directory target
+    if (mkdirs(String_val(Field(Field(current_mount, 0), 1))) == -1) {
+      eio_unix_fork_error(errors, "pivot_root-mkdir-mount", errno);
     }
 
+    mount_result = mount(String_val(Field(Field(current_mount, 0), 0)),
+                         String_val(Field(Field(current_mount, 0), 1)), NULL,
+                         MS_REC | MS_BIND, NULL);
+
+    // Fail early if a mount fails...
+    if (mount_result < 0) {
+      char error[PATH_MAX];
+      snprintf(error, sizeof(error), "mount failed: (%s->%s)",
+               String_val(Field(Field(current_mount, 0), 0)),
+               String_val(Field(Field(current_mount, 0), 1)));
+      eio_unix_fork_error(errors, error, errno);
+    }
+
+    // After mounting for the first time, we can come back and add any
+    // extra modes that may have been specified, for example RDONLY.
+    if (mode != 0) {
+      mount_result = mount(String_val(Field(Field(current_mount, 0), 0)),
+                           String_val(Field(Field(current_mount, 0), 1)), NULL,
+                           MS_REMOUNT | MS_BIND | mode, NULL);
+
+      if (mount_result < 0) {
+        eio_unix_fork_error(errors, "remount-for-mode", errno);
+      }
+    }
+
+    // Next mount in the list
+    current_mount = Field(current_mount, 1);
+  }
 
   // Change to the 'new' root
-  if (chdir ("/") == -1)
-    {
-      eio_unix_fork_error (errors, "pivot_root-chdir", strerror (errno));
-      _exit (1);
-    }
+  if (chdir("/") == -1) {
+    eio_unix_fork_error(errors, "pivot_root-chdir", errno);
+  }
 
   // Unmount the old root and remove it
-  if (umount2 (put_old, MNT_DETACH) == -1)
-    {
-      eio_unix_fork_error (errors, put_old, strerror (errno));
-      _exit (1);
-    }
+  if (umount2(put_old, MNT_DETACH) == -1) {
+    eio_unix_fork_error(errors, put_old, errno);
+  }
 
   // Remove the old root
-  if (rmdir (put_old) == -1)
-    {
-      eio_unix_fork_error (errors, put_old, strerror (errno));
-      _exit (1);
-    }
-
+  if (rmdir(put_old) == -1) {
+    eio_unix_fork_error(errors, put_old, errno);
+  }
 
   // Apply any flags to the new root, e.g. RDONLY
-  if (Int_val (v_root_flags))
-    {
-      if (mount
-	  ("/", "/", NULL, (MS_REMOUNT | MS_BIND | Int_val (v_root_flags)),
-	   NULL) <= -1)
-	{
-	  eio_unix_fork_error (errors, "pivot_root-rootflags",
-			       strerror (errno));
-	  _exit (1);
-	}
+  if (Int_val(v_root_flags)) {
+    if (mount("/", "/", NULL, (MS_REMOUNT | MS_BIND | Int_val(v_root_flags)),
+              NULL) <= -1) {
+      eio_unix_fork_error(errors, "pivot_root-rootflags", errno);
     }
+  }
 }
 
-CAMLprim value
-void_fork_pivot_root (value v_unit)
-{
-  return Val_fork_fn (action_pivot_root);
+CAMLprim value void_fork_pivot_root(value v_unit) {
+  return Val_fork_fn(action_pivot_root);
 }
 
 #define String_array_val(v) *((char ***)Data_custom_val(v))
@@ -430,15 +370,14 @@ static void finalize_string_array(value v) {
 }
 
 static struct custom_operations string_array_ops = {
-  "string.array",
-  finalize_string_array,
-  custom_compare_default,
-  custom_hash_default,
-  custom_serialize_default,
-  custom_deserialize_default,
-  custom_compare_ext_default,
-  custom_fixed_length_default
-};
+    "string.array",
+    finalize_string_array,
+    custom_compare_default,
+    custom_hash_default,
+    custom_serialize_default,
+    custom_deserialize_default,
+    custom_compare_ext_default,
+    custom_fixed_length_default};
 
 CAMLprim value void_make_string_array(value v_len) {
   CAMLparam0();
@@ -449,7 +388,8 @@ CAMLprim value void_make_string_array(value v_len) {
   if (caml_umul_overflow(sizeof(char *), n + 1, &total))
     caml_raise_out_of_memory();
 
-  v_str_array = caml_alloc_custom_mem(&string_array_ops, sizeof(char ***), total);
+  v_str_array =
+      caml_alloc_custom_mem(&string_array_ops, sizeof(char ***), total);
 
   char **c = calloc(sizeof(char *), n + 1);
   String_array_val(v_str_array) = c;
@@ -463,7 +403,7 @@ static void fill_string_array(char **c, value v_ocaml_array) {
   int n = Wosize_val(v_ocaml_array);
 
   for (int i = 0; i < n; i++) {
-    c[i] = (char *) String_val(Field(v_ocaml_array, i));
+    c[i] = (char *)String_val(Field(v_ocaml_array, i));
   }
 
   c[n] = NULL;
@@ -478,8 +418,7 @@ static void action_fexecve(int errors, value v_config) {
   fill_string_array(envp, Field(v_config, 5));
 
   fexecve(Int_val(v_exe), argv, envp);
-  eio_unix_fork_error(errors, "fexecve", strerror(errno));
-  _exit(1);
+  eio_unix_fork_error(errors, "fexecve", errno);
 }
 
 CAMLprim value void_fork_fexecve(value v_unit) {

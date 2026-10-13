@@ -9,7 +9,7 @@ type mode = R | RW
 
 type config = {
   args : (executor * string list) option;
-  rootfs : (string * mode) option;
+  rootfs : (string * bool * mode) option;
   mounts : mount list;
   network : network;
 }
@@ -135,7 +135,7 @@ let actions v : Fork_action.t list =
   let root, tmpfs, root_mode =
     match v.rootfs with
     | None -> (Filename.temp_dir "void-" "-tmpdir", true, R)
-    | Some (s, m) -> (s, false, m)
+    | Some (s, b, m) -> (s, b, m)
   in
   let e =
     match v.args with
@@ -176,7 +176,12 @@ let actions v : Fork_action.t list =
   let user_namespace = map_uid_gid ~uid ~gid in
   [ user_namespace; mounts; fds ] @ e
 
-let rootfs ~mode path v = { v with rootfs = Some (path, mode) }
+let rootfs ~mode path v = { v with rootfs = Some (path, false, mode) }
+
+let tmp_rootfs ~mode v =
+  let tmpdir = Filename.temp_dir "void-" "-tmpdir" in
+  { v with rootfs = Some (tmpdir, true, mode) }
+
 let exec args v = { v with args = Some (Program (List.hd args), args) }
 
 let fexec file args v =
@@ -237,7 +242,6 @@ let spawn ~sw v =
       | () -> Eio.Cancel.protect cleanup
       | exception Eio.Cancel.Cancelled _ ->
           Eio.Cancel.protect (fun () ->
-              Printf.eprintf "Cancelled?";
               signal t Sys.sigkill;
               Eio_posix.Low_level.await_readable "void_spawn" t.pid_fd;
               cleanup ()));

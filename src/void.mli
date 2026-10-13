@@ -45,6 +45,9 @@ val empty : config
 val rootfs : mode:mode -> path -> config -> config
 (** Add a new root filesystem *)
 
+val tmp_rootfs : mode:mode -> config -> config
+(** Request a tmpdir rootfs (this is the default with [mode = R]). *)
+
 val mount : mode:mode -> src:path -> tgt:path -> config -> config
 (** Mount a path into the void process *)
 
