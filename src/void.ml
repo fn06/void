@@ -6,8 +6,10 @@ module Rcfd = Eio_unix.Private.Rcfd
 module Fork_action = Eio_unix.Private.Fork_action
 
 type mode = R | RW
+type yes = Yes
+type no = No
 
-type config = {
+type 'a config = {
   args : (executor * string list) option;
   rootfs : (string * bool * mode) option;
   mounts : mount list;
@@ -249,6 +251,8 @@ let spawn ~sw v =
   match read_response errors_r with
   | "" -> t (* Success! Execing the child closed [errors_w] and we got EOF. *)
   | err -> failwith err
+
+let spawn_hermetic ~sw v = spawn ~sw v
 
 let to_eio_status t =
   match t with
