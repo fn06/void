@@ -39,6 +39,9 @@ type mode = R | RW
 type _ config
 (** A configuration for a void process *)
 
+type mount
+(** The type for mounts. *)
+
 type yes = Yes
 type no = No
 
@@ -58,7 +61,10 @@ val tmp_rootfs :
   < rootfs : yes ; network : 'n ; exec : 'e > config
 (** Request a tmpdir rootfs (this is the default with [mode = R]). *)
 
-val mount : mode:mode -> src:path -> tgt:path -> 'a config -> 'a config
+val make_mount : src:path -> tgt:path -> mode:mode -> mount
+(** [make_mount ~src ~tgt ~mode] *)
+
+val mount : mount -> 'a config -> 'a config
 (** Mount a path into the void process *)
 
 val network :
@@ -100,3 +106,26 @@ val pp_exit_status : Unix.process_status Fmt.t
 (** Useful for debugging, a simple pretty-printer for exit statuses *)
 
 val to_eio_status : Unix.process_status -> Eio.Process.exit_status
+(** Convert a {! Unix.process_status} into an Eio status. *)
+
+(** {2 Private}
+
+    The {! Private} module provides access to the low-level fork actions amongst
+    other expert tools. Most users should not need to interact with these. *)
+module Private : sig
+  module Fork_actions : sig
+    val pivot_root :
+      ?mounts:mount list ->
+      root:string ->
+      mode ->
+      Eio_unix.Private.Fork_action.t
+
+    val map_uid_gid : uid:int -> gid:int -> Eio_unix.Private.Fork_action.t
+  end
+
+  val fork_actions :
+    Eio_unix.Private.Fork_action.t list -> int * Unix.file_descr
+  (** [fork_actions actions] will fork a new process and return the
+      [(pid, pid_fd)] of the parent and the child. Unlike most of the APIs, this
+      allows you to run actions and then carry on with OCaml code. *)
+end

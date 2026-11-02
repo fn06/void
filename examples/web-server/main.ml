@@ -6,8 +6,8 @@ let which proc exec =
 
 let caddy proc =
   Void.empty |> Void.tmp_rootfs ~mode:RW
-  |> Void.mount ~mode:R ~src:"/nix" ~tgt:"/nix"
-  |> Void.mount ~mode:R ~src:"/var/www" ~tgt:"/www"
+  |> Void.mount (Void.make_mount ~mode:R ~src:"/nix" ~tgt:"/nix")
+  |> Void.mount (Void.make_mount ~mode:R ~src:"/var/www" ~tgt:"/www")
   |> Void.exec [ which proc "caddy" ]
 
 let () =

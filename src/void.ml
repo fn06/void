@@ -38,6 +38,10 @@ module Mount = struct
   end
 end
 
+let make_mount ~src ~tgt ~mode =
+  let mode = if mode = R then Mount.Flags.ms_rdonly else Mount.Flags.empty in
+  { src; tgt; mode }
+
 external action_mount : unit -> Fork_action.fork_fn = "void_fork_mount"
 
 let action_mount = action_mount ()
@@ -102,6 +106,12 @@ external eio_spawn :
   Flags.t ->
   Eio_unix.Private.Fork_action.c_action list ->
   int * Unix.file_descr = "caml_void_clone3"
+
+external eio_fork :
+  Unix.file_descr ->
+  Flags.t ->
+  Eio_unix.Private.Fork_action.c_action list ->
+  int * Unix.file_descr = "caml_void_fork"
 
 type t = {
   pid : int;
@@ -191,9 +201,7 @@ let fexec file args v =
   | None -> invalid_arg "No underlying file descriptor"
   | Some fd -> { v with args = Some (File fd, "fexec" :: args) }
 
-let mount ~mode ~src ~tgt v =
-  let mode = if mode = R then Mount.Flags.ms_rdonly else Mount.Flags.empty in
-  { v with mounts = { src; tgt; mode } :: v.mounts }
+let mount mount v = { v with mounts = mount :: v.mounts }
 
 let network device v =
   { v with network = { devices = device :: v.network.devices } }
@@ -267,3 +275,49 @@ let pp_exit_status ppf = function
 
 let run t =
   Eio.Switch.run @@ fun sw -> spawn ~sw t |> exit_status |> Eio.Promise.await
+
+module Private = struct
+  module Fork_actions = struct
+    let pivot_root ?(mounts = []) ~root root_mode =
+      let root_flags =
+        if root_mode = R then Mount.Flags.ms_rdonly else Mount.Flags.empty
+      in
+      pivot_root root root_flags false mounts
+
+    let map_uid_gid ~uid ~gid = map_uid_gid ~uid ~gid
+  end
+
+  let read_all fd =
+    let buf = Buffer.create 16 in
+    let bs = Bytes.create 16 in
+    Eio_unix.Fd.use_exn "read_all" fd @@ fun fd ->
+    let rec loop () =
+      match Unix.read fd bs 0 16 with
+      | 0 | (exception End_of_file) -> Buffer.contents buf
+      | exception Unix.Unix_error (Unix.EAGAIN, _, _) -> loop ()
+      | n ->
+          Buffer.add_bytes buf (Bytes.sub bs 0 n);
+          loop ()
+    in
+    loop ()
+
+  let fork_actions actions =
+    let uid, gid = Unix.(getuid (), getgid ()) in
+    let user_namespace = map_uid_gid ~uid ~gid in
+    let actions = user_namespace :: actions in
+    with_pipe @@ fun errors_r errors_w ->
+    Eio_unix.Private.Fork_action.with_actions actions @@ fun c_actions ->
+    let pid, pid_fd =
+      Fd.use_exn "errors-w" errors_w @@ fun errors_w ->
+      Eio.Private.Trace.with_span "fork_actions" @@ fun () ->
+      let flags = Flags.(clone_pidfd + void_flags) in
+      eio_fork errors_w flags c_actions
+    in
+    match pid with
+    | 0 -> (pid, pid_fd)
+    | _ -> (
+        Fd.close errors_w;
+        match read_all errors_r with
+        | "" -> (pid, pid_fd)
+        | msg -> Fmt.failwith "fork actions failed: %s" msg)
+end

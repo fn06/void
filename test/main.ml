@@ -9,7 +9,7 @@ let () =
   let open Void in
   let void =
     empty
-    |> mount ~mode:R ~src:"/tmp/test" ~tgt:"bin"
+    |> mount (make_mount ~mode:R ~src:"/tmp/test" ~tgt:"bin")
     |> exec [ "/bin/busybox"; "ls" ]
   in
   let t = Void.spawn ~sw void in

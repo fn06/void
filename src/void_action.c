@@ -131,6 +131,45 @@ CAMLprim value caml_void_clone3(value v_errors, value v_flags,
   CAMLreturn(v_result);
 }
 
+void void_run_fork_actions(int errors, value v_actions) {
+  int old_flags = fcntl(errors, F_GETFL, 0);
+  fcntl(errors, F_SETFL, old_flags & ~O_NONBLOCK);
+  while (Is_block(v_actions)) {
+    value v_action = Field(v_actions, 0);
+    fork_fn *action = (fork_fn *) Nativeint_val(Field(v_action, 0));
+    action(errors, v_action);
+    v_actions = Field(v_actions, 1);
+  }
+}
+
+CAMLprim value caml_void_fork(value v_errors, value v_flags,
+                                value v_actions) {
+  CAMLparam1(v_actions);
+  CAMLlocal1(v_result);
+  pid_t child_pid;
+  int pidfd = -1; /* Is automatically close-on-exec */
+
+  struct caml_void_clone_args cl_args = {
+      .flags = Int_val(v_flags),
+      .pidfd = (uintptr_t)&pidfd,
+      .exit_signal =
+          SIGCHLD, /* Needed for wait4 to work if we exit before exec */
+      .stack = (uintptr_t)NULL, /* Use copy-on-write parent stack */
+      .stack_size = 0,
+  };
+
+  child_pid = clone3_no_fallback(&cl_args);
+  if (child_pid == 0) {
+    void_run_fork_actions(Int_val(v_errors), v_actions);
+  }
+
+  v_result = caml_alloc_tuple(2);
+  Store_field(v_result, 0, Val_long(child_pid));
+  Store_field(v_result, 1, Val_int(pidfd));
+
+  CAMLreturn(v_result);
+}
+
 // Actions
 
 // MOUNT/UNMOUNT
