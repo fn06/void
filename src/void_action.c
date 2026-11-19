@@ -215,17 +215,29 @@ static int put_line(const char *filename, const char *line) {
   return 0;
 }
 
+static void action_pause (int errors, value v_config) {
+    value v_fd = Field(v_config, 1);
+	int res;
+	char buf[1];
+
+	res = read(Long_val(v_fd), buf, 1);
+	if (res != 1) {
+      eio_unix_fork_error(errors, "action-pause", errno);
+	}
+}
+
+CAMLprim value void_fork_pause(value v_unit) {
+  return Val_fork_fn(action_pause);
+}
+
 // MAP UID/GID to root
 static void action_map_uid_gid(int errors, value v_config) {
   value v_uid = Field(v_config, 1);
   value v_gid = Field(v_config, 2);
   int result;
-  char uid_line[30];
-  char gid_line[30];
 
-  // We map root onto the calling UID
-  snprintf(uid_line, sizeof(uid_line), "0 %i 1\n", Int_val(v_uid));
-  result = put_line("/proc/self/uid_map", uid_line);
+  // We map root onto the calling UID: [container_start] [host_start] [len]
+  result = put_line("/proc/self/uid_map", String_val(v_uid));
 
   if (result < 0) {
     eio_unix_fork_error(errors, "map_uid_gid-uid", errno);
@@ -240,14 +252,13 @@ static void action_map_uid_gid(int errors, value v_config) {
    *
    * See also: https://lwn.net/Articles/626665/ */
 
-  put_line("/proc/self/setgroups", "deny\n");
+  result = put_line("/proc/self/setgroups", "deny\n");
 
   if (result < 0) {
     eio_unix_fork_error(errors, "map_uid_gid-setgroups", errno);
   }
 
-  result = snprintf(gid_line, sizeof(gid_line), "0 %i 1\n", Int_val(v_gid));
-  put_line("/proc/self/gid_map", gid_line);
+  result = put_line("/proc/self/gid_map", String_val(v_gid));
 
   if (result < 0) {
     eio_unix_fork_error(errors, "map_uid_gid-gid", errno);

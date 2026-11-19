@@ -48,6 +48,17 @@ type no = No
 val empty : < rootfs : yes ; network : no ; exec : no > config
 (** The empty void *)
 
+(** {2 Mount namespace}
+
+    All void processes are initially created in a new mount namespace, and
+    without any user configuration, the processes will be run in a new, empty
+    directory mounted on [/].
+
+    Use {! rootfs} to set up the pivot root. You can also specifically request a
+    temporary directory too using {! tmp_rootfs}.
+
+    Additional mounts can be specified with {! mount}. *)
+
 val rootfs :
   mode:mode ->
   path ->
@@ -67,30 +78,75 @@ val make_mount : src:path -> tgt:path -> mode:mode -> mount
 val mount : mount -> 'a config -> 'a config
 (** Mount a path into the void process *)
 
+(** {2 Network Namespaces}
+
+    All void processes are initially created without any network device except a
+    loopback.
+
+    You can use {! network} to specify the name of the network device you wish
+    to be included in the namespace. *)
+
 val network :
   string ->
   < rootfs : 'r ; network : no ; exec : 'e > config ->
   < rootfs : 'r ; network : yes ; exec : 'e > config
 (** Add a network device *)
 
+(** {2 User namespaces}
+
+    All void processes are created initially in a new user namespace without any
+    UID (or GID) mapping. This results in a process with a namespace UID of
+    nobody.
+
+    You can set the UID and GID mapping manually with {! uid_map} and
+    {! gid_map}. Note that these functions do not check for the validity of the
+    maps you provide.
+
+    Alternatively, you can use {! default_maps} which will map the namespace
+    root to the host user who is creating the namespace, and then use the values
+    in [/etc/subuid] to map the rest of the namespace (similarly for GID). *)
+
+type uns_map = (int * int * int) list
+(** A user namespace map. *)
+
+val uid_map : uns_map -> 'a config -> 'a config
+(** Provide a UID map that will be passed to [newuidmap]. *)
+
+val gid_map : uns_map -> 'a config -> 'a config
+(** Provide a UID map that will be passed to [newgidmap]. *)
+
+val default_maps :
+  subuid:_ Eio.Path.t -> subgid:_ Eio.Path.t -> uns_map * uns_map
+(** Creates default maps using the supplied paths to [/etc/subuid] and
+    [/etc/subgid], alongside mapping the root to the calling user.
+
+    To be safe, this function fails if the calling user is root. *)
+
+val fork_actions : Eio_unix.Private.Fork_action.t list -> 'a config -> 'a config
+(** An escape hatch to add more fork actions. *)
+
 val exec : string list -> 'a config -> 'a config
-(** Make a void configuration ready to be spawned *)
+(** Make a void configuration ready to be spawned. *)
 
 val fexec : _ Eio.File.ro -> string list -> 'a config -> 'a config
-(** Make a void configuration ready to be spawned *)
+(** Like {! exec} except a file descriptor is passed instead of a path to the
+    executable. *)
 
-val spawn : sw:Eio.Switch.t -> _ config -> t
+val spawn : process_mgr:_ Eio.Process.mgr -> sw:Eio.Switch.t -> _ config -> t
 (** Spawn a void process *)
 
 val spawn_hermetic :
-  sw:Eio.Switch.t -> < rootfs : _ ; network : no ; exec : _ > config -> t
+  process_mgr:_ Eio.Process.mgr ->
+  sw:Eio.Switch.t ->
+  < rootfs : _ ; network : no ; exec : _ > config ->
+  t
 (** Like {!spawn} except, it requires the configuration to have no network
     access. *)
 
 val pid : t -> int
 (** The pid of a running void process *)
 
-val run : 'a config -> Unix.process_status
+val run : process_mgr:_ Eio.Process.mgr -> 'a config -> Unix.process_status
 (** A combination of {! spawn} and awaiting the promise returned by
     {! exit_status} *)
 
@@ -119,8 +175,12 @@ module Private : sig
       root:string ->
       mode ->
       Eio_unix.Private.Fork_action.t
+    (** The pivot root fork action. *)
 
-    val map_uid_gid : uid:int -> gid:int -> Eio_unix.Private.Fork_action.t
+    val configure_user_namespace :
+      process_mgr:_ Eio.Process.mgr -> pid:int -> uns_map -> uns_map -> unit
+    (** Uses [newuidmap] and [newgidmap] to confgiure the namespaces based on
+        the {! uns_map}s that are supplied. *)
   end
 
   val fork_actions :

@@ -14,4 +14,5 @@ let () =
   Eio_posix.run @@ fun env ->
   assert (Eio.Path.is_directory (env#fs / "/nix/store"));
   let caddy = caddy env#process_mgr in
-  Fmt.pr "%a\n%!" Void.pp_exit_status @@ Void.run caddy
+  Fmt.pr "%a\n%!" Void.pp_exit_status
+  @@ Void.run ~process_mgr:env#process_mgr caddy

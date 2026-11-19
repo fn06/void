@@ -8,12 +8,16 @@ module Fork_action = Eio_unix.Private.Fork_action
 type mode = R | RW
 type yes = Yes
 type no = No
+type uns_map = (int * int * int) list
 
 type 'a config = {
   args : (executor * string list) option;
   rootfs : (string * bool * mode) option;
   mounts : mount list;
   network : network;
+  uid_map : uns_map;
+  gid_map : uns_map;
+  extra_actions : Eio_unix.Private.Fork_action.t list;
 }
 
 and mount = { src : string; tgt : string; mode : int [@warning "-69"] }
@@ -67,13 +71,12 @@ let pivot_root (new_root : string) (new_root_flags : Mount.Flags.t)
                (action_pivot_root, new_root, new_root_flags, tmpfs, mounts)));
     }
 
-external action_map_uid_gid : unit -> Fork_action.fork_fn
-  = "void_fork_map_uid_gid"
+external action_pause : unit -> Fork_action.fork_fn = "void_fork_pause"
 
-let action_map_uid_gid = action_map_uid_gid ()
+let action_pause = action_pause ()
 
-let map_uid_gid ~uid ~gid =
-  Fork_action.{ run = (fun k -> k (Obj.repr (action_map_uid_gid, uid, gid))) }
+let pause (fd : Unix.file_descr) =
+  Fork_action.{ run = (fun k -> k (Obj.repr (action_pause, fd))) }
 
 external action_fexecve : unit -> Fork_action.fork_fn = "void_fork_fexecve"
 
@@ -134,7 +137,15 @@ let void_flags = List.fold_left Flags.( + ) 0 Flags.all
 type path = string
 
 let empty =
-  { args = None; rootfs = None; mounts = []; network = { devices = [] } }
+  {
+    args = None;
+    rootfs = None;
+    mounts = [];
+    network = { devices = [] };
+    extra_actions = [];
+    uid_map = [];
+    gid_map = [];
+  }
 
 let std_fds =
   [
@@ -143,7 +154,26 @@ let std_fds =
     (2, Eio_unix.Fd.stderr, `Blocking);
   ]
 
-let actions v : Fork_action.t list =
+let configure_user_namespace ~process_mgr ~pid uids gids =
+  let uid_cmd =
+    [ "newuidmap"; string_of_int pid ]
+    @ List.concat_map
+        (fun (container, host, len) ->
+          [ string_of_int container; string_of_int host; string_of_int len ])
+        uids
+  in
+  let () = Eio.Process.run process_mgr uid_cmd in
+  let gid_cmd =
+    [ "newgidmap"; string_of_int pid ]
+    @ List.concat_map
+        (fun (container, host, len) ->
+          [ string_of_int container; string_of_int host; string_of_int len ])
+        gids
+  in
+  let () = Eio.Process.run process_mgr gid_cmd in
+  ()
+
+let actions ~pause v : Fork_action.t list =
   let root, tmpfs, root_mode =
     match v.rootfs with
     | None -> (Filename.temp_dir "void-" "-tmpdir", true, R)
@@ -162,6 +192,7 @@ let actions v : Fork_action.t list =
             Eio_unix.Fd.use_exn "fexec" fd @@ fun ufd ->
             [ fexecve ufd ~env:[||] ~argv:(Array.of_list args) ])
   in
+  let e = v.extra_actions @ e in
   let fds_to_map = match v.args with Some (File fd, _) -> [ fd ] | _ -> [] in
   let fds =
     List.map
@@ -184,9 +215,7 @@ let actions v : Fork_action.t list =
     if root_mode = R then Mount.Flags.ms_rdonly else Mount.Flags.empty
   in
   let mounts = pivot_root root root_flags tmpfs mounts in
-  let uid, gid = Unix.(getuid (), getgid ()) in
-  let user_namespace = map_uid_gid ~uid ~gid in
-  [ user_namespace; mounts; fds ] @ e
+  [ mounts; fds ] @ pause @ e
 
 let rootfs ~mode path v = { v with rootfs = Some (path, false, mode) }
 
@@ -205,6 +234,40 @@ let mount mount v = { v with mounts = mount :: v.mounts }
 
 let network device v =
   { v with network = { devices = device :: v.network.devices } }
+
+let fork_actions actions v =
+  { v with extra_actions = actions @ v.extra_actions }
+
+let uid_map uid_map v = { v with uid_map = uid_map @ v.uid_map }
+let gid_map gid_map v = { v with gid_map = gid_map @ v.gid_map }
+
+let read_subs ~username path =
+  Eio.Path.load path |> String.split_on_char '\n'
+  |> List.map (String.split_on_char ':')
+  |> List.find_map (function
+    | user :: start :: [ len ] when String.equal user username ->
+        Some (int_of_string start, int_of_string len)
+    | _ -> None)
+
+let default_maps ~subuid ~subgid =
+  let uid, gid, username =
+    match (Unix.getuid (), Unix.getgid ()) with
+    | 0, _ -> Fmt.invalid_arg "default_maps: cannot be run as root"
+    | n, m -> (n, m, (Unix.getpwuid n).pw_name)
+  in
+  let subuid =
+    read_subs ~username subuid
+    |> Option.map (fun (s, len) -> [ (1, s, len) ])
+    |> Option.value ~default:[]
+  in
+  let subgid =
+    read_subs ~username subgid
+    |> Option.map (fun (s, len) -> [ (1, s, len) ])
+    |> Option.value ~default:[]
+  in
+  let root_uid = (0, uid, 1) in
+  let root_gid = (0, gid, 1) in
+  (root_uid :: subuid, root_gid :: subgid)
 
 (* From eio_linux/eio_posix *)
 let with_pipe fn =
@@ -226,9 +289,21 @@ let rec waitpid pid =
       status
   | exception Unix.Unix_error (EINTR, _, _) -> waitpid pid
 
-let spawn ~sw v =
+let need_pause v = v.uid_map <> [] || v.gid_map <> []
+
+let handle_pause ~process_mgr v pid =
+  configure_user_namespace ~process_mgr ~pid v.uid_map v.gid_map
+
+let write_once_and_cleanup fd =
+  Fun.protect ~finally:(fun () -> Unix.close fd) @@ fun () ->
+  assert (Unix.write fd (Bytes.of_string "!") 0 1 = 1)
+
+let spawn ~process_mgr ~sw v =
   with_pipe @@ fun errors_r errors_w ->
-  Eio_unix.Private.Fork_action.with_actions (actions v) @@ fun c_actions ->
+  let pause_r, pause_w = Unix.pipe ~cloexec:true () in
+  let pause = if need_pause v then [ pause pause_r ] else [] in
+  Eio_unix.Private.Fork_action.with_actions (actions ~pause v)
+  @@ fun c_actions ->
   Switch.check sw;
   let exit_status, set_exit_status = Promise.create () in
   let t =
@@ -238,6 +313,10 @@ let spawn ~sw v =
       let flags = Flags.(clone_pidfd + void_flags) in
       eio_spawn errors_w flags c_actions
     in
+    if need_pause v then begin
+      handle_pause ~process_mgr v pid;
+      write_once_and_cleanup pause_w
+    end;
     let pid_fd = Fd.of_unix ~sw ~seekable:false ~close_unix:true pid_fd in
     { pid; pid_fd; exit_status }
   in
@@ -260,7 +339,7 @@ let spawn ~sw v =
   | "" -> t (* Success! Execing the child closed [errors_w] and we got EOF. *)
   | err -> failwith err
 
-let spawn_hermetic ~sw v = spawn ~sw v
+let spawn_hermetic ~process_mgr ~sw v = spawn ~process_mgr ~sw v
 
 let to_eio_status t =
   match t with
@@ -273,8 +352,9 @@ let pp_exit_status ppf = function
   | Unix.WSTOPPED n -> Fmt.pf ppf "Stopped with %i" n
   | Unix.WSIGNALED n -> Fmt.pf ppf "Signalled with %i" n
 
-let run t =
-  Eio.Switch.run @@ fun sw -> spawn ~sw t |> exit_status |> Eio.Promise.await
+let run ~process_mgr t =
+  Eio.Switch.run @@ fun sw ->
+  spawn ~sw ~process_mgr t |> exit_status |> Eio.Promise.await
 
 module Private = struct
   module Fork_actions = struct
@@ -284,7 +364,7 @@ module Private = struct
       in
       pivot_root root root_flags false mounts
 
-    let map_uid_gid ~uid ~gid = map_uid_gid ~uid ~gid
+    let configure_user_namespace = configure_user_namespace
   end
 
   let read_all fd =
@@ -302,9 +382,7 @@ module Private = struct
     loop ()
 
   let fork_actions actions =
-    let uid, gid = Unix.(getuid (), getgid ()) in
-    let user_namespace = map_uid_gid ~uid ~gid in
-    let actions = user_namespace :: actions in
+    let actions = actions in
     with_pipe @@ fun errors_r errors_w ->
     Eio_unix.Private.Fork_action.with_actions actions @@ fun c_actions ->
     let pid, pid_fd =
